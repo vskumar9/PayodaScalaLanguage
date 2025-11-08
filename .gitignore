@@ -1,0 +1,11 @@
+# Metals (Scala language server)
+.metals/
+.bsp/
+.scala-build/
+
+# IDE files
+.vscode/
+
+*.pdf
+
+.DS_Store
