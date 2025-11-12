@@ -16,6 +16,7 @@ case class Building2DMultiplicationTable() {
 object Building2DMultiplicationTable {
   def main(args: Array[String]): Unit = {
     val tableBuilder = Building2DMultiplicationTable()
+    println("Enter a number: ")
     val n = readLine().toInt // Read size of multiplication table
     val table = tableBuilder.multiplicationTable(n)
     table.foreach(println)
