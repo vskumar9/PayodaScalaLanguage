@@ -1,0 +1,62 @@
+# Routes
+# This file defines all application routes (Higher priority routes first)
+# https://www.playframework.com/documentation/latest/ScalaRouting
+# ~~~~
+
+################################
+# Authentication
+################################
+POST    /api/login                         controllers.AuthController.login
+POST    /api/logout                        controllers.AuthController.logout
+GET     /api/me                            controllers.AuthController.me
+
+################################
+# Events
+################################
+POST    /api/events                        controllers.EventController.create
+GET     /api/events/:id                    controllers.EventController.get(id: Int)
+GET     /api/events                        controllers.EventController.list
+PUT     /api/events/:id                    controllers.EventController.update(id: Int)
+DELETE  /api/events/:id                    controllers.EventController.softDelete(id: Int)
+POST    /api/events/:id/restore            controllers.EventController.restore(id: Int)
+
+################################
+# Teams
+################################
+POST    /api/teams                         controllers.TeamController.create
+GET     /api/teams/:id                     controllers.TeamController.get(id: Int)
+GET     /api/teams                         controllers.TeamController.list
+PUT     /api/teams/:id                     controllers.TeamController.update(id: Int)
+DELETE  /api/teams/:id                     controllers.TeamController.softDelete(id: Int)
+POST    /api/teams/:id/restore             controllers.TeamController.restore(id: Int)
+
+################################
+# Team Members
+################################
+POST    /api/team-members                  controllers.TeamMemberController.addMember
+GET     /api/teams/:teamId/members         controllers.TeamMemberController.listByTeam(teamId: Int)
+POST    /api/team-members/remove           controllers.TeamMemberController.removeMember
+POST    /api/team-members/:teamMemberId/restore      controllers.TeamMemberController.restoreMember(teamMemberId: Int)
+
+################################
+# Tasks
+################################
+POST    /api/tasks                         controllers.TaskController.create
+GET     /api/events/:eventId/tasks         controllers.TaskController.listForEvent(eventId: Int)
+GET     /api/tasks/:id                     controllers.TaskController.getTask(id: Int)
+PUT     /api/tasks/:id                     controllers.TaskController.update(id: Int)
+PUT     /api/tasks/:id/status              controllers.TaskController.updateStatus(id: Int)
+DELETE  /api/tasks/:id                     controllers.TaskController.softDelete(id: Int)
+
+################################
+# Notification processing (admin/system)
+################################
+POST    /api/notifications/process         controllers.TaskController.processDueNotifications
+
+# ===============================================
+# CORS Preflight (for all /api routes)
+# ===============================================
+OPTIONS /api/*path               controllers.Application.preflight(path: String)
+
+# Map static resources from the /public folder to the /assets URL path
+GET     /assets/*file               controllers.Assets.versioned(path="/public", file: Asset)

@@ -1,0 +1,79 @@
+# ===============================================
+# Auth / Login
+# ===============================================
+POST    /api/login                controllers.AuthController.login
+POST    /api/logout               controllers.AuthController.logout
+GET     /api/me                   controllers.AuthController.me
+
+
+# ===============================================
+# User
+# ===============================================
+GET     /api/users                controllers.UserController.listUsers
+GET     /api/users/:id            controllers.UserController.getUser(id: Int)
+POST    /api/users                controllers.UserController.createUser
+PUT     /api/users/:id            controllers.UserController.updateUser(id: Int)
+DELETE  /api/users/:id            controllers.UserController.deleteUser(id: Int)
+
+
+# ===============================================
+# Employee
+# ===============================================
+GET     /api/employees                        controllers.EmployeeController.listEmployees
+GET     /api/employees/:id                    controllers.EmployeeController.getEmployee(id: Int)
+GET     /api/employees/byUser/:userId         controllers.EmployeeController.getByUserId(userId: Int)
+POST    /api/employees                        controllers.EmployeeController.createEmployee
+PUT     /api/employees/:id                    controllers.EmployeeController.updateEmployee(id: Int)
+DELETE  /api/employees/:id                    controllers.EmployeeController.deleteEmployee(id: Int)
+
+# =========================
+# Equipment Types
+# =========================
+GET     /api/equipment/types                  controllers.EquipmentTypeController.listTypes
+GET     /api/equipment/types/:id              controllers.EquipmentTypeController.getType(id: Int)
+POST    /api/equipment/types                  controllers.EquipmentTypeController.createType
+PUT     /api/equipment/types/:id              controllers.EquipmentTypeController.updateType(id: Int)
+DELETE  /api/equipment/types/:id              controllers.EquipmentTypeController.deleteType(id: Int)
+
+# =========================
+# Equipment Items
+# =========================
+GET     /api/equipment/items                  controllers.EquipmentItemController.listItems
+GET     /api/equipment/items/:id              controllers.EquipmentItemController.getItem(id: Int)
+POST    /api/equipment/items                  controllers.EquipmentItemController.createItem
+PUT     /api/equipment/items/:id              controllers.EquipmentItemController.updateItem(id: Int)
+DELETE  /api/equipment/items/:id              controllers.EquipmentItemController.deleteItem(id: Int)
+
+# =========================
+# Allocations
+# =========================
+GET     /api/equipment/allocations            controllers.EquipmentAllocationController.listAllocations
+GET     /api/equipment/allocations/:id        controllers.EquipmentAllocationController.getAllocation(id: Int)
+POST    /api/equipment/allocations            controllers.EquipmentAllocationController.allocate
+POST    /api/equipment/allocations/:id/return controllers.EquipmentAllocationController.returnEquipment(id: Int)
+POST    /api/equipment/allocations/overdue controllers.EquipmentAllocationController.listAllocationsOverdue
+
+# Admin-only manual trigger for overdue processing
+POST    /api/jobs/overdues/run                controllers.EquipmentAllocationController.runOverdueJob
+
+# =========================
+# Maintenance Tickets
+# =========================
+GET     /api/maintenance/tickets              controllers.MaintenanceTicketController.listTickets
+GET     /api/maintenance/tickets/:id          controllers.MaintenanceTicketController.getTicket(id: Int)
+POST    /api/maintenance/tickets              controllers.MaintenanceTicketController.createTicket
+PUT     /api/maintenance/tickets/:id/status   controllers.MaintenanceTicketController.updateStatus(id: Int)
+PUT     /api/maintenance/tickets/:id/assign   controllers.MaintenanceTicketController.assignTicket(id: Int)
+DELETE  /api/maintenance/tickets/:id          controllers.MaintenanceTicketController.deleteTicket(id: Int)
+
+
+# ===============================================
+# CORS Preflight (for all /api routes)
+# ===============================================
+OPTIONS /api/*path               controllers.Application.preflight(path: String)
+
+
+# ===============================================
+# Static Assets
+# ===============================================
+GET     /assets/*file            controllers.Assets.versioned(path="/public", file: Asset)
