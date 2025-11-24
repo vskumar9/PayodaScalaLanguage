@@ -2,7 +2,7 @@ package services
 
 import javax.inject._
 import repositories.TasksRepository
-import models.Task
+import models.{Task, User}
 import scala.concurrent.{ExecutionContext, Future}
 import java.time.Instant
 
@@ -160,4 +160,7 @@ class TaskService @Inject()(
         Future.successful(0)
     }
   }
+
+  def listTasksBetweenWithUserPaged(start: Instant, end: Instant, page: Int, pageSize: Int): Future[(Seq[(Task, User)], Int)] =
+    tasksRepo.listBetweenWithUserPagedByEstimatedStart(start, end, page, pageSize)
 }

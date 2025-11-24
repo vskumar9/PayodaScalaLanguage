@@ -45,20 +45,21 @@ class TaskController @Inject()(
    */
   implicit val instantFormat: Format[Instant] = new Format[Instant] {
     def writes(i: Instant): JsValue = JsString(i.toString)
+
     def reads(json: JsValue): JsResult[Instant] = json.validate[String].map(Instant.parse)
   }
 
   /**
    * DTO used to create a new task.
    *
-   * @param eventId            event the task belongs to
-   * @param title              title of the task
-   * @param description        optional description
-   * @param assignedTeamId     optional team id to which the task is assigned
-   * @param assignedToUserId   optional user id the task is assigned to
-   * @param priority           optional priority (default handled server-side)
-   * @param estimatedStart     optional estimated start Instant
-   * @param estimatedEnd       optional estimated end Instant
+   * @param eventId             event the task belongs to
+   * @param title               title of the task
+   * @param description         optional description
+   * @param assignedTeamId      optional team id to which the task is assigned
+   * @param assignedToUserId    optional user id the task is assigned to
+   * @param priority            optional priority (default handled server-side)
+   * @param estimatedStart      optional estimated start Instant
+   * @param estimatedEnd        optional estimated end Instant
    * @param specialRequirements optional special requirements notes
    */
   case class TaskCreateDto(eventId: Int, title: String, description: Option[String], assignedTeamId: Option[Int], assignedToUserId: Option[Int], priority: Option[String], estimatedStart: Option[Instant], estimatedEnd: Option[Instant], specialRequirements: Option[String])
@@ -287,6 +288,139 @@ class TaskController @Inject()(
           logger.error("processDueNotifications failed", ex)
           InternalServerError(Json.obj("error" -> "Internal server error", "details" -> ex.getMessage))
         }
+    }
+  }
+
+  implicit val userMinimalWrites: Writes[models.User] = Writes { u =>
+    Json.obj(
+      "userId" -> u.userId,
+      "username" -> u.username,
+      "fullName" -> u.fullName,
+      "email" -> u.email,
+      "phone" -> u.phone,
+      "isActive" -> u.isActive
+    )
+  }
+
+  // Writer for tuple (Task, User)
+  implicit val taskWithUserWrites: Writes[(models.Task, models.User)] = Writes { case (task, user) =>
+    Json.obj(
+      "task" -> Json.toJson(task),
+      "creator" -> Json.toJson(user)(userMinimalWrites)
+    )
+  }
+
+  /**
+   * Lists tasks whose `estimatedStart` timestamp falls within the specified
+   * date/time range, with full pagination support.
+   *
+   * This endpoint accepts optional `start`, `end`, `page`, and `pageSize` query parameters.
+   *
+   * ## Default Parameter Behavior
+   * - `start` missing  → defaults to `Instant.EPOCH`
+   * - `end` missing    → defaults to `Instant.now()`
+   * - `page` missing   → defaults to `1`
+   * - `pageSize` missing → defaults to `50` (and capped to a maximum of `500`)
+   *
+   * ## Query Parameters
+   * - **start** (optional): ISO-8601 timestamp string.
+   * - **end** (optional): ISO-8601 timestamp string.
+   * - **page** (optional): Integer ≥ 1 (default: 1).
+   * - **pageSize** (optional): Integer ≥ 1, maximum 500 (default: 50).
+   *
+   * ## Validation Rules
+   * - If `start` or `end` is provided but is not valid ISO-8601 format,
+   *   a **400 Bad Request** is returned.
+   * - Pagination values outside valid ranges are automatically corrected:
+   *   - `page < 1` → becomes `1`
+   *   - `pageSize < 1` → becomes `1`
+   *   - `pageSize > 500` → becomes `500`
+   *
+   * ## Behavior
+   * Calls:
+   *   `taskService.listTasksBetweenWithUserPaged(start, end, page, pageSize)`
+   *
+   * The service returns a tuple:
+   *   `(Seq[(Task, User)], totalCount)`
+   *
+   * The response JSON contains:
+   * {{
+   *   {
+   *     "total": <total matching tasks>,
+   *     "page": <current page>,
+   *     "pageSize": <page size>,
+   *     "start": "<resolved start time>",
+   *     "end": "<resolved end time>",
+   *     "items": [ ... list of (Task, User) objects ... ]
+   *   }
+   * }}
+   *
+   * ## Responses
+   * - **200 OK** with paged results
+   * - **400 Bad Request** for invalid date formats
+   * - **500 Internal Server Error** for unexpected failures
+   *
+   * ## Authorization
+   * Requires the user to have roles defined in `canView`.
+   *
+   * @return JSON response with paginated task + user records.
+   */
+  def listRange = Action.async { request =>
+    rbac.withRoles(request, canView) { _ =>
+      val q = request.queryString
+
+      // parse or default
+      def parseInstantParamOrDefault(name: String, default: Instant): Either[String, Instant] =
+        q.get(name).flatMap(_.headOption) match {
+          case None => Right(default) // default if missing
+          case Some(value) =>
+            try Right(Instant.parse(value))
+            catch {
+              case _: java.time.format.DateTimeParseException =>
+                Left(s"invalid $name format: must be ISO-8601")
+            }
+        }
+
+      val defaultStart = Instant.EPOCH
+      val defaultEnd   = Instant.now()
+
+      (parseInstantParamOrDefault("start", defaultStart),
+        parseInstantParamOrDefault("end", defaultEnd)) match {
+
+        case (Right(start), Right(end)) =>
+          val page =
+            q.get("page").flatMap(_.headOption).flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(1)
+
+          val pageSize =
+            q.get("pageSize").flatMap(_.headOption).flatMap(s => scala.util.Try(s.toInt).toOption).getOrElse(50)
+
+          val safePage     = Math.max(page, 1)
+          val safePageSize = Math.min(Math.max(pageSize, 1), 500)
+
+          taskService.listTasksBetweenWithUserPaged(start, end, safePage, safePageSize)
+            .map { case (rows, total) =>
+              Ok(
+                Json.obj(
+                  "total"    -> total,
+                  "page"     -> safePage,
+                  "pageSize" -> safePageSize,
+                  "start"    -> start.toString,
+                  "end"      -> end.toString,
+                  "items"    -> Json.toJson(rows)
+                )
+              )
+            }
+            .recover { case ex =>
+              logger.error(
+                s"listTasksBetweenWithUserPaged failed for start=$start end=$end page=$safePage pageSize=$safePageSize",
+                ex
+              )
+              InternalServerError(Json.obj("error" -> "Internal server error", "details" -> ex.getMessage))
+            }
+
+        case (Left(err), _) => Future.successful(BadRequest(Json.obj("error" -> err)))
+        case (_, Left(err)) => Future.successful(BadRequest(Json.obj("error" -> err)))
+      }
     }
   }
 }

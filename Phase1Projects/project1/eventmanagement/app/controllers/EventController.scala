@@ -6,6 +6,7 @@ import play.api.libs.json._
 import scala.concurrent.{ExecutionContext, Future}
 import java.time.Instant
 import play.api.Logging
+import scala.util.Try
 
 import services.EventService
 import repositories.NotificationEventRepository
@@ -289,4 +290,132 @@ class EventController @Inject()(
         }
     }
   }
+
+  implicit val userMinimalWrites: Writes[models.User] = Writes { u =>
+    Json.obj(
+      "userId"   -> u.userId,
+      "username" -> u.username,
+      "fullName" -> u.fullName,
+      "email"    -> u.email,
+      "phone"    -> u.phone,
+      "isActive" -> u.isActive
+    )
+  }
+
+  // Writer for tuple (Event, User)
+  implicit val eventWithUserWrites: Writes[(models.Event, models.User)] = Writes { case (ev, user) =>
+    Json.obj(
+      "event"   -> Json.toJson(ev),
+      "creator" -> Json.toJson(user)(userMinimalWrites)
+    )
+  }
+
+
+  /**
+   * Lists events created within a given date/time range, with pagination support.
+   *
+   * This endpoint accepts optional `start`, `end`, `page`, and `pageSize` query parameters.
+   *
+   * ## Default Behavior
+   * - If `start` is missing, it defaults to `Instant.EPOCH` (1970-01-01T00:00:00Z).
+   * - If `end` is missing, it defaults to the current timestamp (`Instant.now()`).
+   * - `page` defaults to `1` when omitted or invalid.
+   * - `pageSize` defaults to `50` and is capped at a maximum of `500`.
+   *
+   * ## Query Parameters
+   * - `start` (optional): ISO-8601 timestamp string.
+   * - `end`   (optional): ISO-8601 timestamp string.
+   * - `page`  (optional): 1-based page number (default = 1).
+   * - `pageSize` (optional): number of records per page (default = 50, max = 500).
+   *
+   * ## Error Handling
+   * - If `start` or `end` is provided but not a valid ISO-8601 string,
+   *   a `400 Bad Request` is returned with an appropriate error message.
+   * - Unexpected backend failures return `500 Internal Server Error`.
+   *
+   * ## Response Format
+   * Returns a JSON object:
+   * {{{
+   * {
+   *   "total":    <total matching events>,
+   *   "page":     <current page>,
+   *   "pageSize": <page size>,
+   *   "start":    "<resolved start time>",
+   *   "end":      "<resolved end time>",
+   *   "items":    [ ... list of (Event, User) objects ... ]
+   * }
+   * }}}
+   *
+   * Role Requirements:
+   * - Accessible to users with roles defined in `canView`.
+   *
+   * Calls underlying service:
+   * - `eventService.listEventsBetweenWithUserPaged(start, end, page, pageSize)`
+   *
+   * @return HTTP 200 OK with paginated results,
+   *         HTTP 400 Bad Request on invalid date params,
+   *         HTTP 500 Internal Server Error on unexpected failure.
+   */
+  def listRange = Action.async { request =>
+    rbac.withRoles(request, canView) { _ =>
+      val q = request.queryString
+
+      def parseInstantParamOrDefault(name: String, default: Instant): Either[String, Instant] =
+        q.get(name).flatMap(_.headOption) match {
+          case None => Right(default)
+          case Some(value) =>
+            try Right(Instant.parse(value))
+            catch { case _: java.time.format.DateTimeParseException =>
+              Left(s"invalid $name format: must be ISO-8601")
+            }
+        }
+
+      val defaultStart = Instant.EPOCH
+      val defaultEnd   = Instant.now()
+
+      (parseInstantParamOrDefault("start", defaultStart), parseInstantParamOrDefault("end", defaultEnd)) match {
+
+        case (Right(start), Right(end)) =>
+          val page =
+            q.get("page")
+              .flatMap(_.headOption)
+              .flatMap(s => Try(s.toInt).toOption)
+              .getOrElse(1)
+
+          val pageSize =
+            q.get("pageSize")
+              .flatMap(_.headOption)
+              .flatMap(s => Try(s.toInt).toOption)
+              .getOrElse(50)
+
+          val safePage     = Math.max(page, 1)
+          val safePageSize = Math.min(Math.max(pageSize, 1), 500)
+
+          eventService.listEventsBetweenWithUserPaged(start, end, safePage, safePageSize)
+            .map { case (rows, total) =>
+              Ok(
+                Json.obj(
+                  "total"    -> total,
+                  "page"     -> safePage,
+                  "pageSize" -> safePageSize,
+                  "start"    -> start.toString,
+                  "end"      -> end.toString,
+                  "items"    -> Json.toJson(rows)
+                )
+              )
+            }
+            .recover { case ex =>
+              logger.error(
+                s"listEventsBetweenWithUserPaged failed for start=$start end=$end page=$safePage pageSize=$safePageSize",
+                ex
+              )
+              InternalServerError(Json.obj("error" -> "Internal server error", "details" -> ex.getMessage))
+            }
+
+        case (Left(err), _) => Future.successful(BadRequest(Json.obj("error" -> err)))
+        case (_, Left(err)) => Future.successful(BadRequest(Json.obj("error" -> err)))
+      }
+    }
+  }
+
 }

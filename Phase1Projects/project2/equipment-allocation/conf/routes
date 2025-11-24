@@ -47,7 +47,7 @@ DELETE  /api/equipment/items/:id              controllers.EquipmentItemControlle
 # =========================
 # Allocations
 # =========================
-GET     /api/equipment/allocations            controllers.EquipmentAllocationController.listAllocations
+GET     /api/equipment/allocations            controllers.EquipmentAllocationController.listAllocationsByRange
 GET     /api/equipment/allocations/:id        controllers.EquipmentAllocationController.getAllocation(id: Int)
 POST    /api/equipment/allocations            controllers.EquipmentAllocationController.allocate
 POST    /api/equipment/allocations/:id/return controllers.EquipmentAllocationController.returnEquipment(id: Int)

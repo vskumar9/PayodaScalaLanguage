@@ -1,7 +1,7 @@
 package repositories
 
 import javax.inject._
-import models.Event
+import models.{Event, User}
 import slick.jdbc.MySQLProfile
 import utils.SlickMapping
 import scala.concurrent.{Future, ExecutionContext}
@@ -65,6 +65,26 @@ class EventsRepository @Inject()(
 
   /** Slick table query object for performing operations on events. */
   private val events = TableQuery[EventsTable]
+
+  private class UsersTable(tag: Tag) extends Table[User](tag, "users") {
+    def userId       = column[Int]("user_id", O.PrimaryKey, O.AutoInc)
+    def username     = column[String]("username")
+    def passwordHash = column[String]("password_hash")
+    def fullName     = column[String]("full_name")
+    def email        = column[String]("email")
+    def phone        = column[Option[String]]("phone")
+    def isActive     = column[Boolean]("is_active")
+    def isDeleted    = column[Boolean]("is_deleted")
+    def createdAt    = column[Instant]("created_at")
+    def updatedAt    = column[Instant]("updated_at")
+    def deletedAt    = column[Option[Instant]]("deleted_at")
+
+    def * =
+      (userId.?, username, passwordHash, fullName, email, phone, isActive, isDeleted, createdAt, updatedAt, deletedAt) <>
+        (User.tupled, User.unapply)
+  }
+
+  private val users = TableQuery[UsersTable]
 
   /**
    * Inserts a new event into the database.
@@ -145,5 +165,36 @@ class EventsRepository @Inject()(
       .map(e => (e.isDeleted, e.deletedAt, e.updatedAt))
       .update((false, None, now))
     db.run(q)
+  }
+
+  def listBetweenWithUserPaged(start: Instant, end: Instant, page: Int, pageSize: Int): Future[(Seq[(Event, User)], Int)] = {
+    val safePage     = Math.max(page, 1)
+    val safePageSize = Math.max(1, pageSize)
+    val offset       = (safePage - 1) * safePageSize
+
+    val baseFiltered = events.filter(e => e.isDeleted === false && e.eventDate >= start && e.eventDate <= end)
+
+    val countAction: DBIO[Int] = baseFiltered.length.result
+
+    val pagedAction: DBIO[Seq[(EventsTable#TableElementType, UsersTable#TableElementType)]] =
+      baseFiltered
+        .join(users).on(_.createdBy === _.userId)
+        .filter { case (_, u) => u.isDeleted === false }
+        .sortBy { case (e, _) => e.eventDate.asc }
+        .drop(offset)
+        .take(safePageSize)
+        .result
+
+    val composed: DBIO[(Seq[(EventsTable#TableElementType, UsersTable#TableElementType)], Int)] = for {
+      total <- countAction
+      rows  <- pagedAction
+    } yield (rows, total)
+
+    db.run(composed.transactionally).map { case (rows, total) =>
+      val converted: Seq[(Event, User)] = rows.map { case (eRow, uRow) =>
+        (eRow: Event, uRow: User)
+      }
+      (converted, total)
+    }
   }
 }

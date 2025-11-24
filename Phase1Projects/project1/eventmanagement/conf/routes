@@ -19,6 +19,7 @@ GET     /api/events                        controllers.EventController.list
 PUT     /api/events/:id                    controllers.EventController.update(id: Int)
 DELETE  /api/events/:id                    controllers.EventController.softDelete(id: Int)
 POST    /api/events/:id/restore            controllers.EventController.restore(id: Int)
+GET     /api/events/listRange              controllers.EventController.listRange
 
 ################################
 # Teams
@@ -47,6 +48,8 @@ GET     /api/tasks/:id                     controllers.TaskController.getTask(id
 PUT     /api/tasks/:id                     controllers.TaskController.update(id: Int)
 PUT     /api/tasks/:id/status              controllers.TaskController.updateStatus(id: Int)
 DELETE  /api/tasks/:id                     controllers.TaskController.softDelete(id: Int)
+GET     /api/tasks/listRange               controllers.TaskController.listRange
+
 
 ################################
 # Notification processing (admin/system)

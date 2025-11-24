@@ -2,7 +2,7 @@ package services
 
 import javax.inject._
 import repositories.EventsRepository
-import models.Event
+import models.{Event, User}
 import scala.concurrent.{ExecutionContext, Future}
 import java.time.Instant
 
@@ -110,4 +110,7 @@ class EventService @Inject()(eventsRepo: EventsRepository)(implicit ec: Executio
    */
   def restoreEvent(id: Int): Future[Int] =
     eventsRepo.restore(id)
+
+  def listEventsBetweenWithUserPaged(start: Instant, end: Instant, page: Int, pageSize: Int): Future[(Seq[(Event, User)], Int)] =
+    eventsRepo.listBetweenWithUserPaged(start, end, page, pageSize)
 }
