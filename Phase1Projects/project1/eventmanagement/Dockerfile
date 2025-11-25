@@ -23,7 +23,7 @@ WORKDIR /app
 EXPOSE 9000
 
 # Define environment variable
-ENV PLAY_HTTP_SECRET=thisisasecretfortheapplicationandwekeepittosecuretheapplicationletuscheckandithastowork
+ENV PLAY_HTTP_SECRET=b0f4f35a4f9c4e8a9e8d1c7f3a8b2c5d7f9e1a3c4b6d8f0e2a4c6e8f0a2b4c
 
 # Run the binary script when the container launches
-CMD ["./bin/scala-play", "-Dplay.http.secret.key=$PLAY_HTTP_SECRET"]
+CMD ["./bin/eventManagement", "-Dplay.http.secret.key=$PLAY_HTTP_SECRET"]
