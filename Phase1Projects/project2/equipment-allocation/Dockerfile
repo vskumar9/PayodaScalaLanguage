@@ -11,7 +11,7 @@ COPY . /app
 RUN sbt clean compile stage
 
 # Use the OpenJDK image for running the application
-FROM openjdk:11-jre-slim
+FROM eclipse-temurin:11-jre-focal
 
 # Copy the binary files from the previous stage
 COPY --from=build /app/target/universal/stage /app
