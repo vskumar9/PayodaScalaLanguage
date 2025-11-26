@@ -6,6 +6,8 @@ import play.api.libs.json._
 import scala.jdk.CollectionConverters._
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
+import java.util.Properties
+import com.typesafe.config.ConfigFactory
 
 /**
  * Companion object for [[KafkaConsumerActor]].
@@ -65,6 +67,35 @@ class KafkaConsumerActor(
 
   implicit val ec: ExecutionContext = context.dispatcher
 
+  private val config = ConfigFactory.load().getConfig("kafka")
+
+  // read values with safe fallbacks
+  private val bootstrapServers = Option(config.getString("bootstrap-servers")).filter(_.nonEmpty)
+    .orElse(Option(System.getenv("KAFKA_BOOTSTRAP_SERVERS")))
+    .getOrElse(throw new IllegalStateException("KAFKA bootstrap servers not configured"))
+
+  private val groupId = Option(config.getString("group-id")).filter(_.nonEmpty)
+    .orElse(Option(System.getenv("KAFKA_CONSUMER_GROUP_ID")))
+    .getOrElse("eventManagementGroup")
+
+  private val topic = Option(config.getString("topic")).filter(_.nonEmpty)
+    .orElse(Option(System.getenv("KAFKA_CONSUMER_TOPIC")))
+    .getOrElse("eventManagement")
+
+  private val autoOffsetReset = Option(config.getString("auto-offset-reset")).filter(_.nonEmpty)
+    .orElse(Option(System.getenv("KAFKA_AUTO_OFFSET_RESET")))
+    .getOrElse("earliest")
+
+  private val props = new Properties()
+  props.put("bootstrap.servers", bootstrapServers)
+  props.put("group.id", groupId)
+  props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
+  props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
+  props.put("auto.offset.reset", autoOffsetReset)
+
+  private val consumer = new KafkaConsumer[String, String](props)
+  consumer.subscribe(java.util.Collections.singletonList(topic))
+
   /**
    * Kafka consumer configuration:
    *   - Connects to localhost:9092
@@ -72,18 +103,18 @@ class KafkaConsumerActor(
    *   - Deserializes key/value as strings
    *   - Starts reading from earliest offset if no committed offsets exist
    */
-  private val props = new java.util.Properties()
-  props.put("bootstrap.servers", "localhost:9092")
-  props.put("group.id", "console-consumer-93068")
-  props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
-  props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
-  props.put("auto.offset.reset", "earliest")
+//  private val props = new java.util.Properties()
+//  props.put("bootstrap.servers", "localhost:9092")
+//  props.put("group.id", "console-consumer-93068")
+//  props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
+//  props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
+//  props.put("auto.offset.reset", "earliest")
 
   /** The underlying KafkaConsumer instance. */
-  private val consumer = new KafkaConsumer[String, String](props)
+//  private val consumer = new KafkaConsumer[String, String](props)
 
   /** Subscribes to `equipment-events` topic on actor startup. */
-  consumer.subscribe(java.util.Collections.singletonList("equipment-events"))
+//  consumer.subscribe(java.util.Collections.singletonList("equipment-events"))
 
   /** Starts polling loop by sending itself a Poll message. */
   override def preStart(): Unit = self ! Poll

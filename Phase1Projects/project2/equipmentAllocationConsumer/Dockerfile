@@ -7,7 +7,7 @@ WORKDIR /app
 # Copy the entire project into the Docker image
 COPY . /app
 
-ENV BROKER_HOST = 34.134.232.26
+ENV BROKER_HOST=34.136.217.216
 # Compile the Scala application
 RUN sbt compile
 

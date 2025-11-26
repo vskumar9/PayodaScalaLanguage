@@ -125,7 +125,7 @@ class KafkaConsumerActor(
 //  private val consumer = new KafkaConsumer[String, String](props)
 
   // Subscribe to the eventManagement topic
-  consumer.subscribe(java.util.Collections.singletonList("eventManagement"))
+//  consumer.subscribe(java.util.Collections.singletonList("eventManagement"))
 
   /**
    * Called when the actor starts.
