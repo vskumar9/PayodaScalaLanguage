@@ -29,6 +29,7 @@ class JwtAuthFilter @Inject()(
                                implicit val mat: Materializer,
                                ec: ExecutionContext
                              ) extends Filter {
+  implicit val executionContext: ExecutionContext = ec
 
   /**
    * Main filter pipeline.

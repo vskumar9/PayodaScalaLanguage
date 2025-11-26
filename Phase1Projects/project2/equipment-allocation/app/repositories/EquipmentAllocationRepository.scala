@@ -45,6 +45,8 @@ class EquipmentAllocationRepository @Inject()(
       ts => ts.toInstant
     )
 
+  private def tsLit(i: Instant): LiteralColumn[Timestamp] = LiteralColumn(Timestamp.from(i))
+
   /**
    * Internal Slick row representation for the `equipment_allocations` table.
    */
@@ -277,54 +279,6 @@ class EquipmentAllocationRepository @Inject()(
   }
 
   /**
-   * List all allocation details joined with equipment and employee info.
-   *
-   * @return Future[Seq[AllocationDetails]]
-   */
-  /**
-   * List allocation details (allocation + equipment + employee + allocatedBy)
-   * for allocations whose `allocatedAt` is between start and end (inclusive),
-   * with pagination (offset, limit).
-   */
-  def listAllocationDetailsByAllocatedAtRange(
-                                               start: Instant,
-                                               end: Instant,
-                                               offset: Int,
-                                               limit: Int
-                                             ): Future[Seq[AllocationDetails]] = {
-
-    val baseJoin =
-      allocations
-        .filter(a => a.isDeleted === false && a.allocatedAt >= start && a.allocatedAt <= end)
-        .joinLeft(equipmentItems).on(_.equipmentId === _.equipmentId)
-        .joinLeft(employees).on { case ((alloc, _), emp) => alloc.employeeId === emp.employeeId }
-        .joinLeft(employees).on { case (((alloc, _), _), byEmp) => alloc.allocatedByEmployeeId === byEmp.employeeId }
-
-    val q = baseJoin
-      .map { case (((allocRow, equipOpt), empOpt), byEmpOpt) =>
-        (allocRow, equipOpt, empOpt, byEmpOpt)
-      }
-      .sortBy { case (allocRow, _, _, _) => allocRow.allocatedAt.desc }
-      .drop(offset)
-      .take(limit)
-
-    db.run(q.result).map { rows =>
-      rows.map { case (allocRow, equipOpt, empOpt, byEmpOpt) =>
-        val allocModel = toModel(allocRow)
-        AllocationDetails(
-          allocation = allocModel,
-          equipment = equipOpt,
-          employee = empOpt,
-          allocatedBy = byEmpOpt
-        )
-      }
-    }.recover { case NonFatal(ex) =>
-      logger.error(s"Error in listAllocationDetailsByAllocatedAtRange(start=$start,end=$end,offset=$offset,limit=$limit)", ex)
-      throw ex
-    }
-  }
-
-  /**
    * Create a new allocation row and return the generated allocation id.
    *
    * @param a allocation model (allocationId ignored)
@@ -441,60 +395,4 @@ class EquipmentAllocationRepository @Inject()(
       throw ex
     }
   }
-
-  /**
-   * List allocations in a given allocatedAt range (inclusive) with pagination.
-   *
-   * @param start   start Instant (allocatedAt >= start)
-   * @param end     end Instant (allocatedAt <= end)
-   * @param offset  number of records to skip (for pagination)
-   * @param limit   max number of records to return
-   * @return Future[Seq[EquipmentAllocation]]
-   */
-  def listByAllocatedAtRange(
-                              start: Instant,
-                              end: Instant,
-                              offset: Int,
-                              limit: Int
-                            ): Future[Seq[EquipmentAllocation]] = {
-    val q =
-      allocations
-        .filter(a =>
-          a.isDeleted === false &&
-            a.allocatedAt >= start &&
-            a.allocatedAt <= end
-        )
-        .sortBy(_.allocatedAt.desc)
-        .drop(offset)
-        .take(limit)
-
-    db.run(q.result).map(_.map(toModel)).recover { case NonFatal(ex) =>
-      logger.error(s"Error in listByAllocatedAtRange(start=$start, end=$end, offset=$offset, limit=$limit)", ex)
-      throw ex
-    }
-  }
-
-  /**
-   * Count allocations in a given allocatedAt range (for pagination).
-   *
-   * @param start start Instant
-   * @param end   end Instant
-   * @return Future[Int] total number of matching allocations
-   */
-  def countByAllocatedAtRange(start: Instant, end: Instant): Future[Int] = {
-    val q =
-      allocations
-        .filter(a =>
-          a.isDeleted === false &&
-            a.allocatedAt >= start &&
-            a.allocatedAt <= end
-        )
-        .length
-
-    db.run(q.result).recover { case NonFatal(ex) =>
-      logger.error(s"Error in countByAllocatedAtRange(start=$start, end=$end)", ex)
-      throw ex
-    }
-  }
-
 }
