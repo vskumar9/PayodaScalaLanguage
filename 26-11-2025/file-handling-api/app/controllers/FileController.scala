@@ -6,8 +6,9 @@ import scala.concurrent.{ExecutionContext, Future}
 import services.FileService
 import play.api.libs.Files.TemporaryFile
 import play.api.Logger
-import play.api.libs.json.Json
-
+import play.api.libs.json.{Json, JsObject}
+import play.api.mvc.MultipartFormData.FilePart
+import java.io.File
 @Singleton
 class FileController @Inject()(
                                 cc: ControllerComponents,
@@ -17,25 +18,39 @@ class FileController @Inject()(
   private val logger = Logger(this.getClass)
 
   def upload: Action[MultipartFormData[TemporaryFile]] = Action.async(parse.multipartFormData) { request =>
-    request.body.file("file") match {
-      case Some(filePart) =>
-        // Convert Play's TemporaryFile to java.io.File before passing to the service
-        val javaFile = filePart.ref.path.toFile
-        val fp = play.api.mvc.MultipartFormData.FilePart(
-          filePart.key,
-          filePart.filename,
-          filePart.contentType,
-          javaFile
-        )
-        fileService.saveUploadedFile(fp).map { id =>
-          Created(Json.obj("id" -> id))
-        }.recover { case e =>
-          logger.error("upload failed", e)
-          InternalServerError(Json.obj("error" -> "upload failed"))
-        }
+    val fileParts: Seq[MultipartFormData.FilePart[TemporaryFile]] = request.body.files
 
-      case None =>
-        Future.successful(BadRequest(Json.obj("error" -> "Missing file field 'file'")))
+    if (fileParts.isEmpty) {
+      Future.successful(BadRequest(Json.obj("error" -> "No files provided in 'file' field")))
+    } else {
+      val saves: Seq[Future[JsObject]] = fileParts.map { tf =>
+        val javaFile: File = tf.ref.path.toFile
+        val fp: FilePart[File] = FilePart(tf.key, tf.filename, tf.contentType, javaFile)
+
+        fileService.saveUploadedFile(fp).map { id =>
+          val contentTypeStr = tf.contentType.getOrElse("unknown")
+          Json.obj(
+            "originalName" -> tf.filename,
+            "contentType"  -> contentTypeStr,
+            "id"           -> id
+          )
+        }.recover { case ex =>
+          val contentTypeStr = tf.contentType.getOrElse("unknown")
+          val errMsg = Option(ex.getMessage).getOrElse("save failed")
+          Json.obj(
+            "originalName" -> tf.filename,
+            "contentType"  -> contentTypeStr,
+            "error"        -> errMsg
+          )
+        }
+      }
+
+      Future.sequence(saves).map { results =>
+        Created(Json.obj("files" -> results))
+      }.recover { case ex =>
+        logger.error("batch upload failed", ex)
+        InternalServerError(Json.obj("error" -> "batch upload failed"))
+      }
     }
   }
 
