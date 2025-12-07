@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package protobuf;
+
+message UserEvent {
+  string userId = 1;
+  string action = 2;
+  double value  = 3;
+}
