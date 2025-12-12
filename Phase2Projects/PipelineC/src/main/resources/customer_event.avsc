@@ -1,0 +1,19 @@
+{
+  "type": "record",
+  "name": "CustomerEvent",
+  "namespace": "com.example.events",
+  "fields": [
+    { "name": "event_id", "type": "string" },
+    { "name": "customer_id", "type": "int" },
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "EventType",
+        "symbols": ["LIKE", "WISHLIST", "CART_ADD"]
+      }
+    },
+    { "name": "product_id", "type": ["null", "int"], "default": null },
+    { "name": "event_timestamp", "type": "string" }
+  ]
+}

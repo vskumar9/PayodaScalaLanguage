@@ -1,0 +1,181 @@
+# Routes
+# This file defines all application routes (Higher priority routes first)
+# https://www.playframework.com/documentation/latest/ScalaRouting
+# ~~~~
+
+# Map static resources from the /public folder to the /assets URL path
+GET     /assets/*file               controllers.Assets.versioned(path="/public", file: Asset)
+# ==============================================
+# Customer Profile API
+# GET /customer/:id
+#
+# Description:
+#   Returns the profile information for a specific customer.
+#
+# Path params:
+#   :id  - Customer identifier (numeric)
+#
+# Example request:
+#   /customer/456
+#
+# Sample success response:
+#   {
+#     "status": "success",
+#     "message": "Customer profile retrieved successfully",
+#     "data": {
+#       "customer_id": 456,
+#       "avg_order_value": 23991.58,
+#       "email": "customer_456@example.com",
+#       "favorite_category": "Grocery",
+#       "first_purchase": "2022-03-07T06:30:00Z",
+#       "gender": "M",
+#       "last_purchase": "2024-05-18T18:17:40Z",
+#       "name": "Customer_456",
+#       "total_spend": 143949.5,
+#       "total_transactions": 6
+#     }
+#   }
+#
+# Sample not-found response:
+#   {
+#     "status": "error",
+#     "message": "not-found",
+#     "data": {}
+#   }
+# ==============================================
+GET     /customer/:id                      controllers.ApiController.getCustomer(id: Long)
+
+
+# ==============================================
+# Daily Summary API
+# GET /summary/:date/:customerId
+#
+# Description:
+#   Returns the daily transaction summary for a given customer on a specific date.
+#
+# Path params:
+#   :date        - Summary date in YYYY-MM-DD format
+#   :customerId  - Customer identifier (numeric)
+#
+# Example request:
+#   /summary/2025-12-10/3156
+#
+# Sample success response:
+#   {
+#     "status": "success",
+#     "message": "Daily transaction summary retrieved successfully",
+#     "data": {
+#       "summary": {
+#         "date": "2025-12-10",
+#         "customer_id": 3156,
+#         "total_amount": 12895.28,
+#         "total_items": 2,
+#         "distinct_products": 1,
+#         "top_category": "Electronics"
+#       }
+#     }
+#   }
+#
+# Sample not-found response:
+#   {
+#     "status": "error",
+#     "message": "not-found",
+#     "data": {}
+#   }
+#
+# Sample invalid-date response:
+#   {
+#     "status": "error",
+#     "message": "invalid_date_format",
+#     "data": {}
+#   }
+# ==============================================
+GET     /summary/:date/:customerId         controllers.ApiController.getSummary(date: String, customerId: Long)
+
+
+# ==============================================
+# Events API
+# GET /events/:customerId?fromDate=&toDate=&limit=
+#
+# Description:
+#   Returns behavioural events for a customer over an optional date range,
+#   limited to a maximum number of events.
+#
+# Path params:
+#   :customerId  - Customer identifier (numeric)
+#
+# Query params (optional):
+#   fromDate  - Start date (YYYY-MM-DD), defaults to (today - 10 days)
+#   toDate    - End date (YYYY-MM-DD), defaults to today
+#   limit     - Max number of events (default 20, max 500)
+#
+# Example requests:
+#   /events/123
+#   /events/123?fromDate=2025-12-01&toDate=2025-12-10&limit=50
+#
+# Sample success response:
+#   {
+#     "status": "success",
+#     "message": "Customer events retrieved successfully",
+#     "data": {
+#       "events": [
+#         {
+#           "date": "2025-12-09",
+#           "customer_id": 2942,
+#           "event_type": "CART_ADD",
+#           "product_id": 491,
+#           "event_timestamp": "2025-12-09T18:18:50.850395Z",
+#           "ingestion_timestamp": "2025-12-09T18:18:59.149Z"
+#         }
+#       ]
+#     }
+#   }
+#
+# Sample invalid-date response:
+#   {
+#     "status": "error",
+#     "message": "invalid_fromDate_format",
+#     "data": {}
+#   }
+#
+# Sample invalid-limit response:
+#   {
+#     "status": "error",
+#     "message": "invalid_limit",
+#     "data": {}
+#   }
+# ==============================================
+GET     /events/:customerId                controllers.ApiController.getEvents(customerId: Long, fromDate: Option[String], toDate: Option[String], limit: Option[Int])
+
+
+# ==============================================
+# Daily summaries API
+# GET /summary/:date
+#
+# Description:
+#   Returns daily transaction summaries for all customers on a given date.
+#
+# Path params:
+#   :date  - Summary date in YYYY-MM-DD format
+#
+# Examples:
+#   /summary/2025-12-10
+#
+# Response:
+#   {
+#     "status": "success",
+#     "message": "Daily transaction summaries retrieved successfully",
+#     "data": {
+#       "summaries": [ { ...summary fields... }, ... ]
+#     }
+#   }
+#
+# Sample not-found response:
+#   {
+#     "status": "error",
+#     "message": "not-found",
+#     "data": {}
+#   }
+# ==============================================
+GET   /summary/:date           controllers.ApiController.getDailySummaries(date: String, limit: Option[Int])
+
