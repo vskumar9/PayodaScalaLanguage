@@ -9,64 +9,49 @@ import play.api.Logger
 import scala.concurrent.{Future, ExecutionContext, Promise}
 import scala.util.{Failure, Success}
 import java.time.LocalDate
+import scala.util.control.NonFatal
 
 /**
  * Behavioral events service with multi-layer caching.
  *
- * Implements 3-tier caching + in-flight deduplication for customer events:
- *  1. L1: LocalCache (in-memory, JVM-local)
- *  2. L2: RedisCache (distributed, 5s TTL for frequently changing events)
- *  3. L3: S3Repository (lakehouse Parquet files)
+ * Cache layers:
+ *  - L1 LocalCache (in-memory, fast)
+ *  - L2 RedisCache (distributed, uses RedisClientPool now)
+ *  - L3 S3Repository (expensive)
  *
- * Prevents cache stampedes by sharing S3 scans across concurrent identical requests.
+ * In-flight deduplication prevents multiple S3 scans for identical requests.
  */
-class EventService @Inject() (
-                    s3Repo: S3Repository,
-                    l1: LocalCache[String, JsValue],
-                    l2: RedisCache,
-                  )(implicit ec: ExecutionContext) {
+class EventService @Inject()(
+                              s3Repo: S3Repository,
+                              l1: LocalCache[String, JsValue],
+                              l2: RedisCache
+                            )(implicit ec: ExecutionContext) {
 
-  /** Logger for cache operations and S3 query performance. */
   private val logger = Logger(this.getClass)
 
-  /** Short Redis TTL for events (1 Day) due to high-velocity data. */
-  private val redisTtlSeconds: Int = 86400 // 24 hours = 60*60*24 //5
+  /** Redis TTL for events (1HR) */
+  private val redisTtlSeconds = 3600
+
+  /** In-flight dedup map: key → shared Future */
+  private val inflight =
+    new scala.collection.concurrent.TrieMap[String, Future[JsValue]]()
 
   /**
-   * In-flight deduplication map for expensive S3 partition scans.
-   * Concurrent requests for same (customer, date-range, limit) share one scan.
-   */
-  private val inflight = new scala.collection.concurrent.TrieMap[String, Future[JsValue]]()
-
-  /**
-   * Public API: Retrieves customer behavioral events as JSON.
-   *
-   * Always returns valid `JsValue` (events array or error object).
-   *
-   * Cache flow:
-   * 1. L1 hit → immediate return
-   * 2. Join in-flight S3 scan if active
-   * 3. L2 hit → populate L1, return
-   * 4. S3 scan → populate L1+L2, return
-   *
-   * @param customerId Customer identifier to filter
-   * @param from       Start date (YYYY-MM-DD)
-   * @param to         End date (YYYY-MM-DD)
-   * @param limit      Maximum events to return
-   * @return Future[JsValue] with `{ "events": [...] }` or error JSON
+   * Retrieve behavioral events for a customer.
    */
   def getEvents(customerId: Long, from: String, to: String, limit: Int): Future[JsValue] = {
     val key = s"events:$customerId:$from:$to:$limit"
 
-    // ---- 1) Check L1 cache
+    // ---- 1) L1 lookup
     l1.get(key) match {
-      case Some(v) =>
+      case Some(json) =>
         logger.debug(s"L1 events cache hit for $key")
-        return Future.successful(v)
-      case None => // proceed
+        return Future.successful(json)
+
+      case None => // continue
     }
 
-    // ---- 2) If a request is already in-flight for this key, join it
+    // ---- 2) Join in-flight S3 scan if already running
     inflight.get(key) match {
       case Some(existingFuture) =>
         logger.debug(s"Joining in-flight getEvents request for $key")
@@ -77,33 +62,25 @@ class EventService @Inject() (
       case None => // continue
     }
 
-    // ---- 3) Create a promise for this request
-    val p = Promise[JsValue]()
-    inflight.put(key, p.future)
+    // ---- 3) Become owner of this request
+    val promise = Promise[JsValue]()
+    inflight.put(key, promise.future)
 
-    // ---- 4) Execute pipeline (Redis → S3)
+    // ---- 4) Execute Redis → S3 pipeline
     val pipelineF = fetchWithCacheLayers(key, customerId, from, to, limit)
 
-    // complete + remove from inflight map
     pipelineF.onComplete { result =>
       inflight.remove(key)
-      p.complete(result)
+      promise.complete(result)
     }
 
-    p.future
+    promise.future
   }
 
   /**
-   * Internal cache pipeline: L2 Redis → S3 lakehouse fallback.
-   *
-   * Composes the full cache miss path with L1/L2 population.
-   *
-   * @param key        Cache key for logging
-   * @param customerId Customer filter
-   * @param from       Date range start
-   * @param to         Date range end
-   * @param limit      Event limit
-   * @return Future[JsValue] with events JSON or error
+   * Cache pipeline:
+   *  - Try Redis (L2)
+   *  - Else fetch from S3 (L3) and populate Redis + L1
    */
   private def fetchWithCacheLayers(
                                     key: String,
@@ -113,20 +90,20 @@ class EventService @Inject() (
                                     limit: Int
                                   ): Future[JsValue] = {
 
-    // ---- Try L2 (Redis)
-    logger.debug(s"L2 cache lookup for $key")
+    logger.debug(s"L2 Redis lookup for $key")
 
     l2.getJson(key).flatMap {
       case Some(json) =>
         logger.debug(s"L2 events cache hit for $key")
-        try l1.put(key, json) catch {
-          case ex: Throwable => logger.warn(s"L1.put failed for events $key: ${ex.getMessage}")
+        try l1.put(key, json)
+        catch { case ex if NonFatal(ex) =>
+          logger.warn(s"L1.put failed for events $key: ${ex.getMessage}")
         }
         Future.successful(json)
 
       case None =>
-        // ---- L2 miss → fetch from S3
-        logger.debug(s"L2 miss for events $key; querying S3 Repository")
+        // ---- Redis miss → fetch from S3
+        logger.debug(s"L2 miss for $key; querying S3")
 
         val dates = buildDateRange(from, to)
 
@@ -135,15 +112,22 @@ class EventService @Inject() (
 
             val json = Json.obj("events" -> Json.toJson(events))
 
-            // Update caches
-            try l1.put(key, json) catch {
-              case ex: Throwable => logger.warn(s"L1.put failed for events $key: ${ex.getMessage}")
+            // Populate L1
+            try l1.put(key, json)
+            catch { case ex if NonFatal(ex) =>
+              logger.warn(s"L1.put failed for events $key: ${ex.getMessage}")
             }
 
-            l2.setJson(key, json, ttlSec = redisTtlSeconds).onComplete {
-              case Success(true)  => logger.debug(s"Redis SET success for $key")
-              case Success(false) => logger.warn(s"Redis SET returned false for $key")
-              case Failure(ex)    => logger.warn(s"Redis SET failed for $key: ${ex.getMessage}")
+            // Fire-and-forget Redis write
+            l2.setJson(key, json, redisTtlSeconds).onComplete {
+              case Success(true) =>
+                logger.debug(s"Redis SET success for events $key")
+
+              case Success(false) =>
+                logger.warn(s"Redis SET returned false for events $key")
+
+              case Failure(ex) =>
+                logger.warn(s"Redis SET failed for events $key: ${ex.getMessage}")
             }
 
             json
@@ -159,15 +143,11 @@ class EventService @Inject() (
   }
 
   /**
-   * Generates inclusive date range from `from` to `to` as YYYY-MM-DD strings.
-   *
-   * @param from Start date (YYYY-MM-DD)
-   * @param to   End date (YYYY-MM-DD)
-   * @return Seq of all dates in range
+   * Build inclusive date range [from, to]
    */
   private def buildDateRange(from: String, to: String): Seq[String] = {
     val start = LocalDate.parse(from)
-    val end = LocalDate.parse(to)
+    val end   = LocalDate.parse(to)
 
     Iterator
       .iterate(start)(_.plusDays(1))

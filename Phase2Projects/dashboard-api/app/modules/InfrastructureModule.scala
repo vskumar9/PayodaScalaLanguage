@@ -11,7 +11,7 @@ import software.amazon.awssdk.services.s3.S3AsyncClient
 
 import java.net.InetSocketAddress
 import javax.net.ssl.SSLContext
-import com.redis.RedisClient
+import com.redis.RedisClientPool
 import cache.RedisCache
 import scala.concurrent.ExecutionContext
 /**
@@ -123,8 +123,8 @@ class InfrastructureModule extends AbstractModule {
     val host = config.getOptional[String]("redis.host").getOrElse("localhost")
     val port = config.getOptional[Int]("redis.port").getOrElse(6379)
 
-    val client = new RedisClient(host, port)
-    new RedisCache(config, client)
+    val pool = new RedisClientPool(host, port)
+    new RedisCache(config, pool)
   }
 
 }
