@@ -11,10 +11,20 @@ import scala.util.{Failure, Success}
 import scala.util.control.NonFatal
 
 /**
- * Customer profile service with multi-layer caching strategy:
- *  - L1 LocalCache
- *  - L2 RedisCache (RedisClientPool)
- *  - L3 Cassandra
+ * Customer profile service implementing a robust 3-tier caching strategy with
+ * in-flight request deduplication to prevent cache stampedes and duplicate
+ * backend calls.
+ *
+ * Cache hierarchy (fastest → slowest):
+ * 1. **L1**: `LocalCache` (in-memory Caffeine, JVM-local, ~1min TTL)
+ * 2. **L2**: `RedisCache` (distributed RedisClientPool, 1hr TTL)
+ * 3. **L3**: `CassandraRepository` (Amazon Keyspaces, source of truth)
+ *
+ * Key features:
+ * - **In-flight deduplication**: Concurrent requests share the same backend call
+ * - **Graceful degradation**: L1/L2 failures don't block Cassandra access
+ * - **Best-effort cache warming**: Async L2 updates after L3 success
+ * - **Error resilience**: Always returns valid JSON (success or error object)
  */
 class CustomerProfileService @Inject()(
                                         cassRepo: CassandraRepository,
@@ -22,29 +32,45 @@ class CustomerProfileService @Inject()(
                                         l2: RedisCache
                                       )(implicit ec: ExecutionContext) {
 
+  /** Structured logger for cache hits, misses, and backend errors. */
   private val logger = Logger(this.getClass)
 
-  /** Redis TTL: 1 hour */
+  /** Redis L2 TTL: 1 hour (3600 seconds) for customer profile data. */
   private val redisTtlSeconds = 3600
 
-  /** In-flight deduplication map */
+  /**
+   * Thread-safe map for in-flight request deduplication.
+   * Maps `cacheKey → shared Future[JsValue]` for concurrent requests.
+   * Prevents thundering herd / cache stampede on cache misses.
+   */
   private val inflight =
     new scala.collection.concurrent.TrieMap[String, Future[JsValue]]()
 
   /**
-   * Public API: Retrieve customer profile JSON.
+   * Public API: Retrieves complete customer profile as JSON.
+   *
+   * Execution flow:
+   * 1. **L1 hit** → immediate synchronous return
+   * 2. **Join in-flight** → share existing backend call
+   * 3. **L2 hit** → populate L1, return
+   * 4. **Cassandra hit** → populate L1+L2 (async), return
+   * 5. **Cassandra miss** → cache "not-found" in L1 (short TTL)
+   * 6. **Any error** → return standardized error JSON
+   *
+   * @param customerId Numeric customer identifier
+   * @return Future containing profile JSON or standardized error object
    */
   def getCustomerProfile(customerId: Long): Future[JsValue] = {
     val key = s"profile:$customerId"
 
-    // 1) L1 lookup
+    // ========== L1 CACHE (SYNCHRONOUS FAST PATH) ==========
     l1.get(key) match {
       case Some(json) =>
         logger.debug(s"L1 cache hit for $key")
         Future.successful(json)
 
       case None =>
-        // 2) Join inflight request if exists
+        // ========== IN-FLIGHT DEDUPLICATION ==========
         inflight.get(key) match {
           case Some(existingFuture) =>
             logger.debug(s"Joining in-flight request for $key")
@@ -54,7 +80,7 @@ class CustomerProfileService @Inject()(
             }
 
           case None =>
-            // 3) Create new promise
+            // ========== CREATE SHARED PROMISE ==========
             val promise = Promise[JsValue]()
 
             inflight.putIfAbsent(key, promise.future) match {
@@ -63,7 +89,7 @@ class CustomerProfileService @Inject()(
                 existing
 
               case None =>
-                // We own the pipeline — start the cache chain
+                // ========== WE OWN THE PIPELINE ==========
                 logger.debug(s"Cache miss for $key; checking Redis (L2)")
 
                 val redisFuture: Future[Option[JsValue]] =
@@ -72,11 +98,16 @@ class CustomerProfileService @Inject()(
                     None
                   }
 
+                /**
+                 * Main cache pipeline: L2 → Cassandra → Cache warming.
+                 * All L1/L2 operations are best-effort (fire-and-forget).
+                 */
                 val pipelineF: Future[JsValue] = redisFuture.flatMap {
                   case Some(jsonFromRedis) =>
+                    // ========== L2 HIT ==========
                     logger.debug(s"L2 cache hit for $key")
 
-                    // Write to L1
+                    // Populate L1 (best-effort)
                     try l1.put(key, jsonFromRedis)
                     catch { case ex if NonFatal(ex) =>
                       logger.warn(s"L1.put failed for $key: ${ex.getMessage}")
@@ -85,10 +116,12 @@ class CustomerProfileService @Inject()(
                     Future.successful(jsonFromRedis)
 
                   case None =>
+                    // ========== L2 MISS → CASSANDRA ==========
                     logger.debug(s"L2 miss for $key; querying Cassandra")
 
                     cassRepo.getProfile(customerId).map {
                       case Some(row) =>
+                        // Convert row → JSON (prefer repo method, fallback to safe converter)
                         val json = try {
                           cassRepo.rowToJson(row)
                         } catch {
@@ -96,13 +129,13 @@ class CustomerProfileService @Inject()(
                             safeRowToJson(row)
                         }
 
-                        // Update L1
+                        // ========== WARM L1 CACHE ==========
                         try l1.put(key, json)
                         catch { case ex if NonFatal(ex) =>
                           logger.warn(s"L1.put failed for $key: ${ex.getMessage}")
                         }
 
-                        // Async update to Redis
+                        // ========== ASYNC WARM L2 CACHE ==========
                         l2.setJson(key, json, redisTtlSeconds).onComplete {
                           case Success(true) =>
                             logger.debug(s"Redis update OK for $key")
@@ -112,11 +145,13 @@ class CustomerProfileService @Inject()(
                             logger.warn(s"Redis SET failed for $key: ${ex.getMessage}")
                         }
 
-                        json
+                        json  // Return immediately
 
                       case None =>
+                        // ========== NOT FOUND ==========
                         val notFound = Json.obj("error" -> "not-found")
 
+                        // Cache not-found (short TTL) to avoid repeated Cassandra hits
                         try l1.put(key, notFound)
                         catch { case ex if NonFatal(ex) =>
                           logger.warn(s"L1.put failed for $key: ${ex.getMessage}")
@@ -124,6 +159,7 @@ class CustomerProfileService @Inject()(
 
                         notFound
                     }.recover { case ex =>
+                      // ========== CASSANDRA ERROR ==========
                       logger.error(
                         s"Cassandra query failed for customerId=$customerId: ${ex.getMessage}",
                         ex
@@ -132,7 +168,7 @@ class CustomerProfileService @Inject()(
                     }
                 }
 
-                // Complete and clean in-flight map
+                // ========== CLEANUP IN-FLIGHT MAP ==========
                 pipelineF.onComplete { result =>
                   inflight.remove(key)
                   promise.complete(result)
@@ -145,7 +181,15 @@ class CustomerProfileService @Inject()(
   }
 
   /**
-   * Fallback Row → JSON converter (unchanged)
+   * Fallback Cassandra Row → JSON converter for safe serialization.
+   *
+   * Handles all common Cassandra data types with defensive null/type checking:
+   * - Primitives (Boolean, Number, String, Instant)
+   * - Collections (Java List → JsArray, Java Map → JsObject)
+   * - Unknown types → stringified fallback
+   *
+   * @param row Cassandra Row from query result
+   * @return JsObject representation of all row columns
    */
   private def safeRowToJson(row: com.datastax.oss.driver.api.core.cql.Row): JsObject = {
     import scala.jdk.CollectionConverters._

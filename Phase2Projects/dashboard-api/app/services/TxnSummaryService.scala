@@ -13,12 +13,20 @@ import scala.util.{Failure, Success}
 import scala.util.control.NonFatal
 
 /**
- * Transaction summary service with multi-layer caching:
- *  - L1 LocalCache (fast)
- *  - L2 RedisCache (now backed by RedisClientPool)
- *  - L3 S3 lakehouse (expensive)
+ * Transaction summary service supporting both single-customer and all-customers
+ * daily summaries from S3 lakehouse with multi-layer caching.
  *
- * In-flight deduplication avoids redundant S3 scans.
+ * Cache hierarchy:
+ * 1. **L1**: `LocalCache` (in-memory Caffeine, JVM-local)
+ * 2. **L2**: `RedisCache` (distributed RedisClientPool, 1hr TTL)
+ * 3. **L3**: `S3Repository` (Parquet scans on `laketxnsummary/date=YYYY-MM-DD/`)
+ *
+ * Key features:
+ * - **Dual APIs**: Single customer (`GET /summary/{date}/{customerId}`) and bulk (`GET /summaries/{date}`)
+ * - **In-flight deduplication**: Prevents duplicate S3 partition scans
+ * - **Granular cache keys**: `summary:<date>:<customerId>` and `summary_all:<date>:<limit>`
+ * - **Date validation**: Rejects invalid YYYY-MM-DD formats early
+ * - **Graceful degradation**: Cache failures don't block S3 access
  */
 class TxnSummaryService @Inject()(
                                    s3Repo: S3Repository,
@@ -26,19 +34,35 @@ class TxnSummaryService @Inject()(
                                    l2: RedisCache
                                  )(implicit ec: ExecutionContext) {
 
+  /** Structured logger for cache hits, S3 scan errors, and validation failures. */
   private val logger = Logger(this.getClass)
 
-  /** Redis TTL for daily summaries (1 hour). */
+  /** Redis L2 TTL: 1 hour for daily transaction summaries. */
   private val redisTtlSeconds = 3600
 
-  /** In-flight map for deduplicating S3 calls. */
+  /**
+   * Thread-safe map for in-flight S3 scan deduplication across both single and bulk APIs.
+   * Keys: `summary:<date>:<customerId>` or `summary_all:<date>:<limit>`
+   */
   private val inflight =
     new scala.collection.concurrent.TrieMap[String, Future[JsValue]]()
 
-  // ---------------------------------------------------------------------------------------
-  //   SINGLE CUSTOMER DAILY SUMMARY
-  // ---------------------------------------------------------------------------------------
-
+/**
+ * Retrieves daily transaction summary for a single customer from S3 lakehouse.
+ *
+ * Cache key: `summary:<date>:<customerId>`
+ * S3 path: `laketxnsummary/date=YYYY-MM-DD/customerId=<id>/*.parquet`
+ *
+ * Execution flow:
+ * 1. L1 hit → immediate return
+ * 2. Join in-flight → share existing S3 scan
+ * 3. L2 hit → populate L1, return
+ * 4. S3 scan → populate L1+L2 (async), return
+ *
+ * @param date      YYYY-MM-DD date partition to query
+ * @param customerId Customer identifier
+ * @return Future containing summary JSON or standardized error object
+*/*/
   def getSummary(date: String, customerId: Long): Future[JsValue] = {
     val key = s"summary:$date:$customerId"
 
@@ -76,7 +100,12 @@ class TxnSummaryService @Inject()(
   }
 
   /**
-   * Cache chain for single summary: L2 → S3 fallback
+   * Single-customer cache pipeline: L2 Redis → S3 partition scan → Cache warming.
+   *
+   * @param key        Cache key `summary:<date>:<customerId>`
+   * @param date       S3 partition `date=YYYY-MM-DD`
+   * @param customerId Customer filter for Parquet scan
+   * @return Future containing summary JSON wrapper `{"summary": {...}}` or error
    */
   private def fetchWithCacheLayers(
                                     key: String,
@@ -127,10 +156,18 @@ class TxnSummaryService @Inject()(
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  //   ALL CUSTOMERS DAILY SUMMARY
-  // ---------------------------------------------------------------------------------------
-
+/**
+ * Retrieves daily transaction summaries for all customers (top N by limit).
+ *
+ * Cache key: `summary_all:<date>:<limit>`
+ * S3 path: `laketxnsummary/date=YYYY-MM-DD/*.parquet` (full partition scan)
+ *
+ * Early validation rejects invalid date formats before cache/S3 operations.
+ *
+ * @param date  YYYY-MM-DD date partition to scan
+ * @param limit Maximum number of customer summaries to return
+ * @return Future containing JSON array `{"summaries": [...]}` or error object
+ */*/
   def getDailySummaries(date: String, limit: Int): Future[JsValue] = {
     val key = s"summary_all:$date:$limit"
 
@@ -195,6 +232,14 @@ class TxnSummaryService @Inject()(
     promise.future
   }
 
+  /**
+   * Validates YYYY-MM-DD date format using Java `LocalDate.parse()`.
+   *
+   * Used for early validation in bulk summary API to avoid unnecessary cache/S3 operations.
+   *
+   * @param date YYYY-MM-DD string to validate
+   * @return true if valid ISO date format
+   */
   private def isValidDate(date: String): Boolean =
     try {
       LocalDate.parse(date)
