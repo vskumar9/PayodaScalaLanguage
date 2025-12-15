@@ -36,17 +36,47 @@ case class KafkaConfig(bootstrapServers: String, customerEventsTopic: String)
 case class SparkAppConfig(shufflePartitions: String)
 
 /**
+ * MySQL database connection configuration for pipeline data operations.
+ *
+ * @param host MySQL server hostname or IP address
+ * @param port MySQL server port (default: 3306)
+ * @param database Target database name
+ * @param user Database username for authentication
+ * @param password Database password for authentication
+ * @param fetchSize Number of rows to fetch per JDBC result set batch
+ *                  (optimizes memory usage for large result sets)
+ */
+case class MySQLConfig(
+                        host: String,
+                        port: Int,
+                        database: String,
+                        user: String,
+                        password: String,
+                        fetchSize: Int
+                      ) {
+  /**
+   * Lazily constructed JDBC connection URL with optimized parameters.
+   *
+   * Includes:
+   * - `useSSL=false`: Disables SSL for internal/trusted network connections
+   * - `serverTimezone=UTC`: Ensures consistent timezone handling
+   * - `rewriteBatchedStatements=true`: Enables batch insert optimization
+   */
+  lazy val jdbcUrl: String =
+    s"jdbc:mysql://$host:$port/$database" +
+      "?useSSL=false&serverTimezone=UTC&rewriteBatchedStatements=true"
+}
+
+/**
  * Centralized configuration loader for Pipeline C application.
  *
- * Loads settings from `application.conf` using Typesafe Config and provides:
- * - Immutable, type-safe configuration objects
- * - Lazy evaluation of nested config sections
- * - Centralized access point for all pipeline components
+ * Provides type-safe, immutable access to all pipeline configuration through dedicated case classes.
+ * Loads from `application.conf` using Typesafe Config with support for environment overrides.
  *
- * Expected config structure:
+ * ## Expected `application.conf` Structure
  * ```
  * kafka {
- *   bootstrapServers = "localhost:9092"
+ *   bootstrapServers = "localhost:9092,localhost:9093"
  *   customerEventsTopic = "customer-events"
  * }
  * keyspaces {
@@ -61,16 +91,32 @@ case class SparkAppConfig(shufflePartitions: String)
  * spark {
  *   shufflePartitions = "200"
  * }
+ * mysql {
+ *   host = "mysql-host"
+ *   port = 3306
+ *   database = "pipeline_c"
+ *   user = "pipeline_user"
+ *   password = "secure-password"
+ *   fetchSize = 1000
+ * }
+ * ```
+ *
+ * ## Usage
+ * ```
+ * val kafkaConfig = PipelineConfiguration.kafka
+ * val s3Path = PipelineConfiguration.appCfg.lakeEventsBasePath
+ * val mysqlUrl = PipelineConfiguration.mysql.jdbcUrl
  * ```
  */
 object PipelineConfiguration {
-  /** Loaded Typesafe Config instance (application.conf + overrides) */
+  /** Loaded Typesafe Config instance from application.conf + system properties + environment variables */
   private val cfg = ConfigFactory.load()
 
   /**
    * Kafka configuration for Structured Streaming consumer.
    *
-   * @note bootstrapServers supports multiple brokers: "host1:9092,host2:9092"
+   * @note `bootstrapServers` supports multiple brokers: "host1:9092,host2:9093"
+   * @return Immutable KafkaConfig with topic and broker details
    */
   val kafka: KafkaConfig = KafkaConfig(
     cfg.getString("kafka.bootstrapServers"),
@@ -80,7 +126,9 @@ object PipelineConfiguration {
   /**
    * Keyspaces/S3 credentials and endpoint configuration.
    *
-   * @note endpoint optional - empty string uses default AWS S3
+   * Supports both AWS S3 and S3-compatible storage (MinIO, Ceph, etc.).
+   * @note Empty `endpoint` uses default AWS S3 endpoint for specified region
+   * @return KeyspacesConfig with authentication credentials
    */
   private val ks = cfg.getConfig("keyspaces")
   val keyspaces: KeyspacesConfig = KeyspacesConfig(
@@ -91,9 +139,12 @@ object PipelineConfiguration {
   )
 
   /**
-   * Application paths configuration.
+   * Application paths configuration for data lake operations.
    *
-   * Defines the root S3 location for event partitioning and checkpointing.
+   * Defines root S3 locations for:
+   * - Event partitioning and archiving
+   * - Structured Streaming checkpoints
+   * - @return AppConfig with lake storage paths
    */
   private val app = cfg.getConfig("app")
   val appCfg: AppConfig = AppConfig(app.getString("lakeEventsBasePath"))
@@ -101,7 +152,28 @@ object PipelineConfiguration {
   /**
    * Spark performance tuning configuration.
    *
-   * Controls shuffle parallelism - should match cluster size and data volume.
+   * Critical for production workloads:
+   * - `shufflePartitions` should match cluster executor count × cores per executor
+   * - Typical values: 200-1000 depending on data volume and cluster size
+   * @return SparkAppConfig for runtime tuning
    */
   val sparkCfg: SparkAppConfig = SparkAppConfig(cfg.getString("spark.shufflePartitions"))
+
+  /**
+   * MySQL configuration for pipeline metadata and reference data operations.
+   *
+   * Used for:
+   * - Customer lookup tables
+   * - products management
+   * @return MySQLConfig with connection details and JDBC URL
+   */
+  private val mysqlCfg = cfg.getConfig("mysql")
+  val mysql: MySQLConfig = MySQLConfig(
+    host       = mysqlCfg.getString("host"),
+    port       = mysqlCfg.getInt("port"),
+    database   = mysqlCfg.getString("database"),
+    user       = mysqlCfg.getString("user"),
+    password   = mysqlCfg.getString("password"),
+    fetchSize  = mysqlCfg.getInt("fetchSize")
+  )
 }
